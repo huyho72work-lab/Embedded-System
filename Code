@@ -1,0 +1,231 @@
+/*
+ * sieuam.c
+ *
+ * Created: 9/2/2025 5:45:21 PM
+ * Author : Huy
+ */ 
+#define F_CPU 8000000UL
+#include <avr/io.h>
+#include <stdio.h>
+#include <util/delay.h>
+#include <avr/interrupt.h>
+
+#define TIMER0_05s 288 // 244 là do fuse CPU 8MHZ, lấy FCPU/prescaler(64) = 125KHZ, thời gian tràn timer0 = 256/125KHZ
+//so lan tran =0.59/ thoi gian tran = 288 và từ 288 đó là ngôn ngữ mà timer0 sẽ hiểu để biết là 0.59s 
+#define DA DDRA
+#define DB DDRB
+#define PA PORTA
+#define PB PORTB
+#define RS PINA1
+#define RW PINA2
+#define RE PINA3
+#define trigger_pin PD5
+#define echo_pin PD6
+#define coi_trigger PA0
+#define button PC0
+#define led PC1
+
+int lantran;
+int buzzer_duration =0;
+
+ISR(TIMER0_OVF_vect){
+	buzzer_duration++;
+	if (buzzer_duration >= TIMER0_05s) /*nếu mà cái biến buzzer duration mỗi một lần chờ trong hàm ngắt đủ 244 tick thì sẽ tương đuong 0.5s */
+	{
+		PA^=(1<<coi_trigger);
+		buzzer_duration=0;   
+	}
+}
+
+ISR(TIMER1_OVF_vect){
+lantran++;  /* voi moi lan overflow tức là dù cho timer dã vuot nguong 0XFFFF tuc 65535 tick mà chua phát hien canh xung lên,xuong
+ thì tu khac cong bien tràn va nhân vào mà tính distance
+*/
+}
+
+void buzzer_start(){
+TCNT0=0; // resset biến đêm đê đếm
+buzzer_duration=0; 
+TIMSK |=(1<<TOIE0);
+}
+
+void buzzer_stop(){
+ TIMSK &= ~(1 << TOIE0);        // tắt ngắt Timer0
+PA &= ~(1 << coi_trigger);     // tắt còi
+}
+
+void setup_lcd(unsigned char x)
+{
+	PB =x;
+	PA &=~(1<<RS);
+	PA &=~(1<<RW);
+	PA |=(1<<RE);
+	_delay_us(1);
+	PA &=~(1<<RE);
+	_delay_ms(3);
+}
+void display_char(unsigned char x){
+	PB=x;
+	PA |=(1<<RS);
+	PA &=~(1<<RW);
+	PA |=(1<<RE);
+	_delay_us(1);
+	PA &=~(1<<RE);
+	_delay_ms(2);
+}
+void khoitao(void){
+	DB =0xFF;
+	DA=0xFF;
+	_delay_ms(20);
+	setup_lcd(0x38);   // truyen 8 bit su dung hai hang
+	setup_lcd(0x0C);   //bat man hinh tat con tro
+	setup_lcd(0x06);    // dich phai con tro 
+	setup_lcd(0x01);    // clear sau khi da hien du lieu
+	setup_lcd(0x80);    // dua con tro ve vi tri dau 
+}
+void set_up_timer0_buzzer(){
+	TCCR0 &=~((1<<WGM00) |(1<<WGM01));
+	TCCR0 |=(1<<CS01)|(1<<CS00);
+}
+
+void display_string(char *str)   // ham hien thi chuoi ki tu 
+{
+	for (int i=0;str[i]!=0;i++)
+	{
+	display_char(str[i]);
+	}
+}
+
+void display_stringxy(char row , char pos  , char *str)   // ham khai bao hang, cot 
+{
+	if(row ==0 && pos <16){
+		setup_lcd((pos & 0x0F) | 0X80);
+	}
+	else if ( row==1 && pos <16){
+	setup_lcd((pos & 0x0F) | 0xC0);	
+	}
+	display_string(str);
+}
+void clear_lcd()
+{
+	
+	setup_lcd(0x01);   // xoa sau khi da gui du lieu
+	setup_lcd(0x80);   // dua con tro ve vi tri ban dau 
+}
+
+	void phat_xung()
+	{
+		
+		// phat xung va tat xung
+		
+		PORTD |=(1<< trigger_pin);
+		_delay_us(10);
+		PORTD &= (~(1<< trigger_pin));
+}
+
+void check(){
+	do{
+		if((PINC &(1<<button))==0){
+			
+			_delay_ms(2);
+			if((PINC &(1<<button))==0){
+				PORTC ^=(1<< led);
+				while((PINC &(1<<button))==0);
+			}
+		return;
+		}
+		display_stringxy(0,0,"CAPTAIN I'M OFF ");
+		display_stringxy(1,0,"PRESS TO RESTART"); // d
+	}while((PORTC & (1 << led)) == 0);
+	}
+
+int main(void)
+{
+	char string[10]; 
+
+float count;
+double khoang;
+int cm;
+
+	DDRD |=(1<<PD5);  // trigger
+	DDRA |=(1<<PA0);  // coi trigger
+	PORTD |=(1<<PD6);
+	sei();   // cho phe ngat tong de vua thuc hien dem vua hien len lcd
+	TIMSK |=(1<<TOIE1);
+	TCCR1A =0;  // che do normal  
+	DDRC &= ~(1<<PC0);   // PC0 button
+	PORTC |=(1<<PC0);  // PC0 input pullup for button 
+	DDRC |=(1<<PC1);     // led output pc1
+	PORTC |=(1<<PC1);
+	
+    khoitao();
+	set_up_timer0_buzzer();
+	char distance[8];
+	
+	while (1) 
+    {
+		TIFR |= (1<<ICF1);
+		TCNT1 =0;  // xoa timer
+		TCCR1B = 0x41;   // CHE do bat xung canh len
+		TIFR |= (1<<TOV1);   //XOA CO TRAN
+		lantran=0;  // nh? là m?i l?n vào l?i while thì cho overflow tr? v? 0
+		
+		phat_xung();
+				
+		// tính toán 
+		while ((TIFR & (1<<ICF1)) ==0);  // khi khong co suon lenthi nhay vao vong lap vo tan
+		TIFR |= (1<<ICF1);   // XOA CO  INPUT CAPTURE
+		TCNT1 =0; // khi bat duoc suon len thi xoa bo dem timer lien 
+		TCCR1B =0x01;  // cau hinh che do bat xung xuong
+		TIFR |= (1<<TOV1);   // xoa co tran timer
+		
+		while ((TIFR & (1<<ICF1))==0);  // neu khong co suon xuong thi roi vao vong lap vo tan
+		TIFR |= (1<<ICF1);   // xoa co input capture
+	
+		/*  ICR la gia tri tick cua TCNT duoc dem khi xung o muc cao, ta lay ICR(tick) nhan voi thoi gian 1 tick là 1/8M 
+	ta se thu duoc tong thoi gian no o muc cao ma o day la thoi gian chan trigger phat xung eho hap thu xung roi ta lay thoi
+	gian nhan cho van toc song am trong khong khi la 34300cm/s ta ra duoc quang duong roi chia hai(vi là quang duong
+	trigger phat va echo hap thu ma phai chia 2 chu) */  
+	
+		count= (ICR1 + (lantran*65535)) *(1.0/8000000.0);   
+		khoang=count*34300/2;
+		cm = (int)khoang;
+		
+		if(cm <30){
+			PORTA |=(1<<coi_trigger);
+			_delay_ms(25);
+			int thap_phan=(int)((khoang - cm )*100);
+			display_stringxy(0,0,"WARNING DISTANCE");
+			sprintf(string,"%d.%02d cm   ",cm,thap_phan);
+			display_stringxy(1,5,string);
+			PORTA &=~(1<<coi_trigger);
+		}
+		
+		if(cm>=30 && cm<=50){
+			if((TIMSK &(1<<TOIE0))==0){
+				buzzer_start();	 
+			}
+			int thap_phan=(int)((khoang - cm )*100);		
+			display_stringxy(0,0,"DISTANCE ALERT  ");
+			sprintf(string,"%d.%02d cm   ",cm,thap_phan);
+			display_stringxy(1,5,string);	
+		}
+			if(cm>50){
+				buzzer_stop();
+				int thap_phan=(int)((khoang - cm )*100);
+				display_stringxy(0,0,"DISTANCE MEASURE");
+				sprintf(string,"%d.%02d cm   ",cm,thap_phan);
+				display_stringxy(1,5,string);
+			}
+				if((PINC &(1<<button))==0){	
+					_delay_ms(2);
+					if((PINC &(1<<button))==0){
+					PORTC ^=(1<< led);
+					while((PINC &(1<<button))==0);
+					} 
+				check();
+				clear_lcd();
+				}
+					}  // while
+	}  // main
+// 
